@@ -33,6 +33,14 @@ inputs:
     description: 'Max characters for the posted PR comment before truncation.'
     required: false
     default: '60000'
+  max-chunks:
+    description: 'Max number of chunks reviewed per PR, to bound cost/time on very large PRs. Extra chunks are skipped and noted in the comment.'
+    required: false
+    default: '40'
+  temperature:
+    description: 'Sampling temperature (0-2) sent to the Groq API.'
+    required: false
+    default: '0.2'
   exclude-paths:
     description: 'Newline-separated git pathspec excludes appended to the diff.'
     required: false
@@ -88,6 +96,10 @@ runs:
           exit 1
         fi
 
+        # Fetch the exact base/head commits by SHA so this works regardless of the
+        # caller's checkout depth (shallow checkouts otherwise fail with "unknown revision").
+        git fetch --no-tags --prune --depth=1 origin "$BASE_SHA" "$HEAD_SHA"
+
         pathspecs=()
         while IFS= read -r p; do
           [ -z "$p" ] && continue
@@ -122,6 +134,8 @@ runs:
         CHUNK_CHAR_BUDGET: ${{ inputs.chunk-char-budget }}
         MAX_COMPLETION_TOKENS: ${{ inputs.max-completion-tokens }}
         MAX_COMMENT_SIZE: ${{ inputs.max-comment-size }}
+        MAX_CHUNKS: ${{ inputs.max-chunks }}
+        TEMPERATURE: ${{ inputs.temperature }}
         EXTRA_INSTRUCTIONS: ${{ inputs.extra-instructions }}
         COMMENT_MARKER: ${{ inputs.comment-marker }}
         FAIL_ON_REVIEW_ERROR: ${{ inputs.fail-on-review-error }}

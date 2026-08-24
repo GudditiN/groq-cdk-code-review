@@ -28,15 +28,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - uses: GudditiN/groq-cdk-code-review@v1
         with:
           groq-api-key: ${{ secrets.GROQ_API_KEY }}
 ```
 
-`fetch-depth: 0` is required so the action can diff against the PR's base commit. You need a `GROQ_API_KEY` secret set on the *consuming* repo (Settings → Secrets and variables → Actions).
+The action fetches the exact base/head commits it needs by SHA, so a plain `actions/checkout@v4` (default shallow depth) is enough — you do **not** need `fetch-depth: 0`.
+
+### Setting up `GROQ_API_KEY`
+
+1. Get an API key from [console.groq.com](https://console.groq.com/keys).
+2. On the repo that will *use* this action (not necessarily this repo): **Settings → Secrets and variables → Actions → New repository secret**.
+3. Name it `GROQ_API_KEY` and paste the key as the value.
+4. Reference it in the workflow as `groq-api-key: ${{ secrets.GROQ_API_KEY }}`, as in the example above.
+
+If the key is missing, invalid, or the configured `model` is wrong/inaccessible, the action fails fast with a clear `::error::` message (and posts an explanatory PR comment) instead of silently retrying or producing an empty review.
+
+### Required GitHub permissions
+
+Set these at the workflow or job level (as in the example):
+
+| Permission | Why |
+|---|---|
+| `contents: read` | Needed for `actions/checkout` and for the action's internal `git fetch`/`git diff` against the base and head commits. |
+| `pull-requests: write` | Needed to post the review comment, and to read/update it on later pushes (via the issue-comments API, which pull requests share). |
+
+Without `pull-requests: write`, the GitHub API calls to create/update the comment will fail with a 403.
 
 ## Inputs
 
@@ -45,19 +63,27 @@ jobs:
 | `groq-api-key` | yes | — | Groq API key. |
 | `github-token` | no | `${{ github.token }}` | Token used to read/post PR comments. |
 | `model` | no | `openai/gpt-oss-20b` | Groq model id. |
-| `chunk-char-budget` | no | `12000` | Approx. max chars of diff per request. Whole files are packed together up to this budget; an oversized single file is sliced on its own. |
+| `chunk-char-budget` | no | `12000` | Approx. max chars of diff per request. See "How chunking works" below. |
 | `max-completion-tokens` | no | `1024` | Max tokens per chunk response. |
 | `max-comment-size` | no | `60000` | Max characters of the final PR comment before truncation. |
+| `max-chunks` | no | `40` | Max number of chunks reviewed per PR. Extra chunks are skipped (noted in the comment) rather than sending an unbounded number of requests on a huge PR. |
+| `temperature` | no | `0.2` | Sampling temperature (0–2) sent to the Groq API. Lower is more consistent/deterministic, which is generally preferable for a reviewer. |
 | `exclude-paths` | no | binaries, lockfiles, snapshots, `cdk.out/**` | Newline-separated git pathspec excludes. |
 | `extra-instructions` | no | `''` | Extra text appended to the reviewer's system prompt (e.g. house rules). |
 | `comment-marker` | no | `<!-- groq-code-review -->` | Hidden marker used to find and update a previous review comment. |
 | `fail-on-review-error` | no | `false` | Fail the job if any chunk couldn't be reviewed after retries. |
 
+### How chunking works
+
+The diff is split on `diff --git` boundaries first, so a chunk never cuts a file's hunk in half. Whole files are then packed together up to `chunk-char-budget` characters per request. If a single file's diff is *larger* than the budget on its own (common for generated files, large snapshots, or big lockfiles that slipped past `exclude-paths`), it's sliced into consecutive sub-chunks and reviewed across multiple requests — the model only sees a fragment of that file per request in that case, so review quality degrades for files that big. Prefer adding such files to `exclude-paths` over relying on slicing.
+
+If the PR produces more chunks than `max-chunks`, only the first `max-chunks` are reviewed and the comment notes how many were skipped.
+
 ## Notes
 
-- Runs on the `pull_request` event (not `pull_request_target`), so on public repos, secrets are not exposed to workflow runs triggered from forked PRs — only `GITHUB_TOKEN` is (read-only, unless the repo explicitly opts fork PRs into write tokens).
-- The diff content is attacker/contributor-controlled input to the LLM prompt. Don't wire this action's output into auto-merge or required status checks — treat it as an aid for human reviewers.
-- Groq's free tier has request/token rate limits; the action retries with backoff and posts a partial review (flagging which chunks failed) rather than failing the whole job, unless `fail-on-review-error: true`.
+- **Fork PRs and secrets**: this action runs on the `pull_request` event (not `pull_request_target`) intentionally. For a *public* repository, GitHub does not pass repository secrets — including `GROQ_API_KEY` — to workflow runs triggered by a pull request from a forked repo; only `GITHUB_TOKEN` is available, and it's read-only unless the repo owner has explicitly enabled write tokens for fork PRs (off by default). In practice this means: on a public repo, PRs from forks will fail this action's input validation (missing `GROQ_API_KEY`) rather than leak the key or silently do nothing. If your repo is private, forks generally aren't a factor since only collaborators can open PRs. Do not switch this to `pull_request_target` to "fix" that — it would remove the protection and expose secrets to untrusted PR code.
+- The diff content is attacker/contributor-controlled input to the LLM prompt. The system prompt instructs the model to treat the diff strictly as content to analyze (not instructions to follow) and wraps it in a random per-run boundary token so a PR can't forge a matching delimiter — this reduces, but does not eliminate, prompt-injection risk. Don't wire this action's output into auto-merge or required status checks — treat it as an aid for human reviewers, not a gate.
+- Groq's free tier has request/token rate limits. The action retries only transient failures (429 rate limits, 5xx server errors, network errors) with exponential backoff; non-transient errors (e.g. a malformed request) are recorded as a per-chunk failure without wasting retries, and auth/model errors (401/403/404 — bad key, bad/inaccessible model) abort the whole run immediately with one clear error instead of repeating the same failure across every chunk. A partial review posts (with failures flagged) rather than failing the whole job, unless `fail-on-review-error: true`.
 
 ## License
 
