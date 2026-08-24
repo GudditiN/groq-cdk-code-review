@@ -1,0 +1,128 @@
+name: 'Groq AI Code Review'
+description: 'Posts an AI-generated pull request review using the Groq API, tuned for catching bugs, security issues, and IaC/AWS CDK/IAM mistakes.'
+author: 'GudditiN'
+
+branding:
+  icon: 'search'
+  color: 'purple'
+
+inputs:
+  groq-api-key:
+    description: 'API key for the Groq API (pass via secrets).'
+    required: true
+  github-token:
+    description: 'Token used to read/post PR comments. Defaults to the workflow GITHUB_TOKEN.'
+    required: false
+    default: ${{ github.token }}
+  model:
+    description: 'Groq model id to use for review.'
+    required: false
+    default: 'openai/gpt-oss-20b'
+  chunk-char-budget:
+    description: >
+      Approximate max characters of diff per model request. Whole files are kept
+      together and packed up to this budget; a single file larger than the budget
+      is sliced on its own.
+    required: false
+    default: '12000'
+  max-completion-tokens:
+    description: 'max_completion_tokens sent to the Groq API per chunk.'
+    required: false
+    default: '1024'
+  max-comment-size:
+    description: 'Max characters for the posted PR comment before truncation.'
+    required: false
+    default: '60000'
+  exclude-paths:
+    description: 'Newline-separated git pathspec excludes appended to the diff.'
+    required: false
+    default: |
+      **/*.png
+      **/*.jpg
+      **/*.jpeg
+      **/*.gif
+      **/*.webp
+      **/*.ico
+      **/*.zip
+      **/*.tar
+      **/*.gz
+      **/*.7z
+      **/*.exe
+      **/*.dll
+      **/*.so
+      **/*.bin
+      **/package-lock.json
+      **/pnpm-lock.yaml
+      **/yarn.lock
+      **/*.snap
+      **/__snapshots__/**
+      **/cdk.out/**
+  extra-instructions:
+    description: 'Extra text appended to the reviewer system prompt (e.g. house rules).'
+    required: false
+    default: ''
+  comment-marker:
+    description: 'Hidden HTML marker used to find and update a prior review comment instead of posting a new one each push.'
+    required: false
+    default: '<!-- groq-code-review -->'
+  fail-on-review-error:
+    description: 'If true, fail the job when the review could not be completed for any chunk. If false, post a partial review with a warning.'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Get PR diff
+      shell: bash
+      env:
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
+        DIFF_FILE: ${{ runner.temp }}/groq-code-review-diff.txt
+      run: |
+        set -euo pipefail
+
+        if [ -z "${BASE_SHA:-}" ] || [ -z "${HEAD_SHA:-}" ]; then
+          echo "::error::This action must run on a pull_request event (base/head SHA missing)."
+          exit 1
+        fi
+
+        pathspecs=()
+        while IFS= read -r p; do
+          [ -z "$p" ] && continue
+          pathspecs+=(":(exclude)$p")
+        done <<< "$EXCLUDE_PATHS"
+
+        git diff "$BASE_SHA" "$HEAD_SHA" -- . "${pathspecs[@]}" > "$DIFF_FILE"
+
+        echo "Diff size:"
+        wc -c "$DIFF_FILE"
+        echo "diff_file=$DIFF_FILE" >> "$GITHUB_ENV"
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install Python dependencies
+      shell: bash
+      run: pip install --quiet --disable-pip-version-check requests
+
+    - name: Run Groq review
+      shell: bash
+      env:
+        GROQ_API_KEY: ${{ inputs.groq-api-key }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        MODEL: ${{ inputs.model }}
+        DIFF_FILE: ${{ env.diff_file }}
+        CHUNK_CHAR_BUDGET: ${{ inputs.chunk-char-budget }}
+        MAX_COMPLETION_TOKENS: ${{ inputs.max-completion-tokens }}
+        MAX_COMMENT_SIZE: ${{ inputs.max-comment-size }}
+        EXTRA_INSTRUCTIONS: ${{ inputs.extra-instructions }}
+        COMMENT_MARKER: ${{ inputs.comment-marker }}
+        FAIL_ON_REVIEW_ERROR: ${{ inputs.fail-on-review-error }}
+      run: python "${{ github.action_path }}/scripts/review.py"
