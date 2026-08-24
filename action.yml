@@ -1,5 +1,5 @@
 name: 'Groq AI Code Review'
-description: 'Posts an AI-generated pull request review using the Groq API, tuned for catching bugs, security issues, and IaC/AWS CDK/IAM mistakes.'
+description: 'Posts an AI code review on pull requests via Groq, focused on bugs, security, and AWS CDK/IAM issues.'
 author: 'GudditiN'
 
 branding:
