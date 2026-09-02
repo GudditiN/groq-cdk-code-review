@@ -184,6 +184,12 @@ For every important finding include:
 3. What is wrong
 4. How to fix it
 
+Format each finding as a short paragraph in prose, not a markdown table.
+Start the paragraph with the severity in bold (e.g. "**HIGH** —"), followed
+by the file/path, then explain what is wrong and how to fix it in flowing
+sentences. Separate findings with a blank line. Do not use markdown tables
+anywhere in your response.
+
 Severity guidance:
 
 - CRITICAL:

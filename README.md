@@ -62,7 +62,7 @@ Without `pull-requests: write`, the GitHub API calls to create/update the commen
 |---|---|---|---|
 | `groq-api-key` | yes | — | Groq API key. |
 | `github-token` | no | `${{ github.token }}` | Token used to read/post PR comments. |
-| `model` | no | `openai/gpt-oss-20b` | Groq model id. |
+| `model` | no | `openai/gpt-oss-120b` | Groq model id. |
 | `chunk-char-budget` | no | `12000` | Approx. max chars of diff per request. See "How chunking works" below. |
 | `max-completion-tokens` | no | `1024` | Max tokens per chunk response. |
 | `max-comment-size` | no | `60000` | Max characters of the final PR comment before truncation. |

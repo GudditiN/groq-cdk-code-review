@@ -17,7 +17,7 @@ inputs:
   model:
     description: 'Groq model id to use for review.'
     required: false
-    default: 'openai/gpt-oss-20b'
+    default: 'openai/gpt-oss-120b'
   chunk-char-budget:
     description: >
       Approximate max characters of diff per model request. Whole files are kept
