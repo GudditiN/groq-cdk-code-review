@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: GudditiN/groq-cdk-code-review@v1
+      - uses: GudditiN/groq-cdk-code-review@v2
         with:
           groq-api-key: ${{ secrets.GROQ_API_KEY }}
 ```
