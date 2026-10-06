@@ -1,6 +1,8 @@
 name: AI Code Review (example / self-test)
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
@@ -20,4 +22,6 @@ jobs:
 
       - uses: ./
         with:
+          # On push to main, only build and cache the repository summary.
+          mode: ${{ github.event_name == 'push' && 'summarize' || 'review' }}
           groq-api-key: ${{ secrets.GROQ_API_KEY }}

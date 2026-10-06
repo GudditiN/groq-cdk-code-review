@@ -7,6 +7,13 @@ branding:
   color: 'purple'
 
 inputs:
+  mode:
+    description: >
+      'review' (default) reviews a pull request. 'summarize' only builds and
+      caches the repository summary; run it on push to the default branch so
+      every PR starts with a warm cache.
+    required: false
+    default: 'review'
   groq-api-key:
     description: 'API key for the Groq API (pass via secrets).'
     required: true
@@ -72,6 +79,26 @@ inputs:
       repo that reference identifiers the diff changes. Set to 0 to send only the diff.
     required: false
     default: '24000'
+  max-request-tokens:
+    description: >
+      Estimated max tokens per Groq request (prompt plus max-completion-tokens).
+      Repository context is trimmed to fit, and diff chunks are capped to fit.
+      Default matches the 8000 tokens-per-minute limit of Groq's on-demand tier;
+      raise it on a paid tier. Set to 0 to disable.
+    required: false
+    default: '8000'
+  summary-char-budget:
+    description: >
+      Max characters of the cached infrastructure overview sent with each chunk.
+      The overview is built once from the base branch by summarizing every source
+      file, cached with actions/cache, and only updated for files that change.
+      Set to 0 to disable.
+    required: false
+    default: '3000'
+  max-summary-files:
+    description: 'Max source files summarized for the overview, most infra-relevant first (entrypoints, stacks, constructs, config).'
+    required: false
+    default: '60'
   extra-instructions:
     description: 'Extra text appended to the reviewer system prompt (e.g. house rules).'
     required: false
@@ -89,6 +116,7 @@ runs:
   using: 'composite'
   steps:
     - name: Get PR diff
+      if: inputs.mode != 'summarize'
       shell: bash
       env:
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -128,14 +156,29 @@ runs:
       shell: bash
       run: pip install --quiet --disable-pip-version-check requests
 
+    - name: Restore repository summary cache
+      id: summary-cache
+      if: inputs.summary-char-budget != '0'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/groq-code-review-cache
+        key: groq-code-review-summary-v1-${{ github.sha }}
+        restore-keys: groq-code-review-summary-v1-
+
     - name: Run Groq review
+      id: review
       shell: bash
       env:
+        MODE: ${{ inputs.mode }}
+        SUMMARY_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+        SUMMARY_CHAR_BUDGET: ${{ inputs.summary-char-budget }}
+        MAX_SUMMARY_FILES: ${{ inputs.max-summary-files }}
+        CACHE_DIR: ${{ inputs.summary-char-budget != '0' && format('{0}/groq-code-review-cache', runner.temp) || '' }}
         GROQ_API_KEY: ${{ inputs.groq-api-key }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
-        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         MODEL: ${{ inputs.model }}
         DIFF_FILE: ${{ env.diff_file }}
         CHUNK_CHAR_BUDGET: ${{ inputs.chunk-char-budget }}
@@ -144,7 +187,18 @@ runs:
         MAX_CHUNKS: ${{ inputs.max-chunks }}
         TEMPERATURE: ${{ inputs.temperature }}
         CONTEXT_CHAR_BUDGET: ${{ inputs.context-char-budget }}
+        MAX_REQUEST_TOKENS: ${{ inputs.max-request-tokens }}
         EXTRA_INSTRUCTIONS: ${{ inputs.extra-instructions }}
         COMMENT_MARKER: ${{ inputs.comment-marker }}
         FAIL_ON_REVIEW_ERROR: ${{ inputs.fail-on-review-error }}
       run: python "${{ github.action_path }}/scripts/review.py"
+
+    # Saved under a hash of its contents, so an unchanged cache is not saved
+    # again. PR runs save to the PR's own cache scope; a run on the default
+    # branch (mode: summarize) saves the cache that all PRs can restore.
+    - name: Save repository summary cache
+      if: always() && steps.review.outputs.cache_key != ''
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/groq-code-review-cache
+        key: groq-code-review-summary-v1-${{ steps.review.outputs.cache_key }}

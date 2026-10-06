@@ -70,6 +70,10 @@ Without `pull-requests: write`, the GitHub API calls to create/update the commen
 | `temperature` | no | `0.2` | Sampling temperature (0–2) sent to the Groq API. Lower is more consistent/deterministic, which is generally preferable for a reviewer. |
 | `exclude-paths` | no | binaries, lockfiles, snapshots, `cdk.out/**` | Newline-separated git pathspec excludes. |
 | `context-char-budget` | no | `24000` | Max chars of repository context sent with each chunk. `0` sends only the diff. See "Repository context" below. |
+| `max-request-tokens` | no | `8000` | Estimated max tokens per request, including `max-completion-tokens`. Context is trimmed and chunks are capped to fit. `0` disables. |
+| `summary-char-budget` | no | `3000` | Max chars of the cached infrastructure overview sent with each chunk. `0` disables it. See "Infrastructure overview" below. |
+| `max-summary-files` | no | `60` | Max source files summarized for the overview, most infra-relevant first. |
+| `mode` | no | `review` | `review` reviews a PR. `summarize` only builds and caches the overview (run it on push to your default branch). |
 | `extra-instructions` | no | `''` | Extra text appended to the reviewer's system prompt (e.g. house rules). |
 | `comment-marker` | no | `<!-- groq-code-review -->` | Hidden marker used to find and update a previous review comment. |
 | `fail-on-review-error` | no | `false` | Fail the job if any chunk couldn't be reviewed after retries. |
@@ -79,6 +83,39 @@ Without `pull-requests: write`, the GitHub API calls to create/update the commen
 The diff is split on `diff --git` boundaries first, so a chunk never cuts a file's hunk in half. Whole files are then packed together up to `chunk-char-budget` characters per request. If a single file's diff is *larger* than the budget on its own (common for generated files, large snapshots, or big lockfiles that slipped past `exclude-paths`), it's sliced into consecutive sub-chunks and reviewed across multiple requests — the model only sees a fragment of that file per request in that case, so review quality degrades for files that big. Prefer adding such files to `exclude-paths` over relying on slicing.
 
 If the PR produces more chunks than `max-chunks`, only the first `max-chunks` are reviewed and the comment notes how many were skipped.
+
+### Infrastructure overview (cached)
+
+Before reviewing, the action builds an overview of the existing infrastructure and sends it at the start of every chunk. That way the model knows which stacks exist and how they are wired, even when the diff touches a single file.
+
+1. The source files at the PR's **base** commit are listed and sorted by relevance: CDK entrypoints (`bin/`, `cdk.json`), then stack, construct and config files, then other code, data files and tests. Up to `max-summary-files` are used. PR content never goes into the overview.
+2. Each file is summarized once (purpose, resources, inputs, outputs and dependencies), in batches. Summaries are cached by **git blob SHA**, so a later run only summarizes files whose contents changed.
+3. The file summaries are combined into one overview of at most `summary-char-budget` characters. The overview is cached too, and rebuilt only when the set of file summaries changes.
+
+The cache is stored with `actions/cache` and saved under a hash of its contents. The first build is the expensive one: on Groq's free tier, about 60 files take roughly 5–10 minutes, because requests are paced to stay under the tokens-per-minute limit. A review spends at most 8 minutes summarizing and then reviews with whatever is ready. The remaining files are summarized on later runs.
+
+GitHub only lets a PR run restore caches from its own PR and from the base branch. To build the cache once for every PR, run the action in `summarize` mode on push to your default branch:
+
+```yaml
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  summarize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: GudditiN/groq-cdk-code-review@v2
+        with:
+          mode: summarize
+          groq-api-key: ${{ secrets.GROQ_API_KEY }}
+```
+
+After each push, only the files that changed are re-summarized. The overview is model-generated and may be incomplete, so the reviewer is told to use it for orientation only, and to base findings on the diff and the repository context.
 
 ### Repository context
 
@@ -90,7 +127,7 @@ A diff alone can't show how a change fits the rest of the codebase. For example,
 
 About 40% of the budget is reserved for references. The model is told to use this context as evidence, to report only problems in the diff, and not to speculate about consumers outside the repository. The context comes from the PR and is treated as untrusted, in the same way as the diff.
 
-Context makes each request larger (24,000 chars is roughly 6k tokens). If you hit Groq rate limits, lower `context-char-budget`. On HTTP 429 the action waits for Groq's `retry-after` header (up to 60s) before retrying.
+Context makes each request larger. Groq's on-demand tier rejects any single request above the model's tokens-per-minute limit (8,000 for `openai/gpt-oss-120b`) with HTTP 413, and it counts `max-completion-tokens` toward that. So the action estimates each request's size and trims context to fit `max-request-tokens`. If Groq still returns 413, it retries the chunk with half the context, then with none. On a paid tier with higher limits, raise `max-request-tokens` to send the full `context-char-budget`. On HTTP 429 the action waits for Groq's `retry-after` header (up to 60s) before retrying.
 
 ## Notes
 
