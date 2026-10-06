@@ -69,6 +69,7 @@ Without `pull-requests: write`, the GitHub API calls to create/update the commen
 | `max-chunks` | no | `40` | Max number of chunks reviewed per PR. Extra chunks are skipped (noted in the comment) rather than sending an unbounded number of requests on a huge PR. |
 | `temperature` | no | `0.2` | Sampling temperature (0–2) sent to the Groq API. Lower is more consistent/deterministic, which is generally preferable for a reviewer. |
 | `exclude-paths` | no | binaries, lockfiles, snapshots, `cdk.out/**` | Newline-separated git pathspec excludes. |
+| `context-char-budget` | no | `24000` | Max chars of repository context sent with each chunk. `0` sends only the diff. See "Repository context" below. |
 | `extra-instructions` | no | `''` | Extra text appended to the reviewer's system prompt (e.g. house rules). |
 | `comment-marker` | no | `<!-- groq-code-review -->` | Hidden marker used to find and update a previous review comment. |
 | `fail-on-review-error` | no | `false` | Fail the job if any chunk couldn't be reviewed after retries. |
@@ -78,6 +79,18 @@ Without `pull-requests: write`, the GitHub API calls to create/update the commen
 The diff is split on `diff --git` boundaries first, so a chunk never cuts a file's hunk in half. Whole files are then packed together up to `chunk-char-budget` characters per request. If a single file's diff is *larger* than the budget on its own (common for generated files, large snapshots, or big lockfiles that slipped past `exclude-paths`), it's sliced into consecutive sub-chunks and reviewed across multiple requests — the model only sees a fragment of that file per request in that case, so review quality degrades for files that big. Prefer adding such files to `exclude-paths` over relying on slicing.
 
 If the PR produces more chunks than `max-chunks`, only the first `max-chunks` are reviewed and the comment notes how many were skipped.
+
+### Repository context
+
+A diff alone can't show how a change fits the rest of the codebase. For example, it doesn't show which stack consumes a prop, where a `deployment-config` key is read, or whether a construct already sets a default. So with each chunk the action also sends context read from the PR's head commit (via `git show` / `git grep`, no extra checkout needed):
+
+1. **Repository layout**: the source files grouped by directory. Compiled `.js`/`.d.ts` next to `.ts` sources, `node_modules`, `cdk.out` and lockfiles are skipped.
+2. **Changed files**: each changed file in full when small, otherwise the hunks with surrounding lines, with line numbers.
+3. **References**: identifiers added or removed in the diff (env var names, config keys, class/stack names, kebab-case resource ids) are searched across the repo, and the matching lines are included. That is how the model sees, for example, that `config.shopDb.minCapacityAcu` is passed in from `bin/infra.ts`, or that `additionalBehaviors` is forwarded by a shared construct. Identifiers that appear in too many files are skipped as too generic.
+
+About 40% of the budget is reserved for references. The model is told to use this context as evidence, to report only problems in the diff, and not to speculate about consumers outside the repository. The context comes from the PR and is treated as untrusted, in the same way as the diff.
+
+Context makes each request larger (24,000 chars is roughly 6k tokens). If you hit Groq rate limits, lower `context-char-budget`. On HTTP 429 the action waits for Groq's `retry-after` header (up to 60s) before retrying.
 
 ## Notes
 

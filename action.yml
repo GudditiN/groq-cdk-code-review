@@ -65,6 +65,13 @@ inputs:
       **/*.snap
       **/__snapshots__/**
       **/cdk.out/**
+  context-char-budget:
+    description: >
+      Max characters of repository context sent with each chunk: a source-file
+      layout, the surrounding code of changed files, and lines elsewhere in the
+      repo that reference identifiers the diff changes. Set to 0 to send only the diff.
+    required: false
+    default: '24000'
   extra-instructions:
     description: 'Extra text appended to the reviewer system prompt (e.g. house rules).'
     required: false
@@ -136,6 +143,7 @@ runs:
         MAX_COMMENT_SIZE: ${{ inputs.max-comment-size }}
         MAX_CHUNKS: ${{ inputs.max-chunks }}
         TEMPERATURE: ${{ inputs.temperature }}
+        CONTEXT_CHAR_BUDGET: ${{ inputs.context-char-budget }}
         EXTRA_INSTRUCTIONS: ${{ inputs.extra-instructions }}
         COMMENT_MARKER: ${{ inputs.comment-marker }}
         FAIL_ON_REVIEW_ERROR: ${{ inputs.fail-on-review-error }}
